@@ -231,11 +231,11 @@ void init_dmabuffer(void){
     }
 }
 
-void HandlePdmData(int16_t buffer[])
+void HandlePdmData(uint16_t buffer[])
 {
     for (int i =0;i < I2S_BUFFERSIZE;i++){
     // loop through this 256 times for 256 16 bit words
-            uint16_t pdm = buffer[i];
+            uint16_t pdm = buffer[i*2];
 #ifndef TWOSTEPCIC
             uint16_t m;
 #endif
@@ -298,7 +298,7 @@ void HandlePdmData(int16_t buffer[])
                 s2_comb3_2 = s2_comb3_1;
                 s2_comb3_1 = stage2;
 // queue the finished PCM sample
-//                RingBuffer_Insert(&pcmring, &stage3);
+                HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,stage3);
 //           SONARCLR;
             }
             }
@@ -376,7 +376,8 @@ main(int argc, char* argv[])
 
 
 //      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_TC);
-
+ HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,0xFFF);
+ HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,0x000);
  if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )(&SPI2->DR), (uint32_t)&dmabuffer[0][0] ,(uint32_t)&dmabuffer[1][0] ,DMA_TRANSFERCOUNT)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
     trace_puts("MultiBufferStart");
 
@@ -393,13 +394,13 @@ while (1) {
     if (Buffer0_rdy) {
           blinkLed.turnOn();
 //          trace_printf("0\n");
-//          HandlePdmData(&dmabuffer[0][0]);
+          HandlePdmData(&dmabuffer[0][0]);
           Buffer0_rdy=0;
       }
       if (Buffer1_rdy) {
           blinkLed.turnOff();
 //          trace_printf("1\n");
-//          HandlePdmData(&dmabuffer[1][0]);
+          HandlePdmData(&dmabuffer[1][0]);
           blinkLed.turnOff();
           Buffer1_rdy=0;
       }
