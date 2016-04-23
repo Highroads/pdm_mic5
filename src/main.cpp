@@ -53,15 +53,15 @@ void SystemClock_Config(void);
 /* DMA Handle callback */
 void dmaM0Complete(DMA_HandleTypeDef *hdma);
 void dmaM1Complete(DMA_HandleTypeDef *hdma);
-void halfComplete(DMA_HandleTypeDef *hdma);
+void dmaHalfComplete(DMA_HandleTypeDef *hdma);
 void dmaError(DMA_HandleTypeDef *hdma);
 //
-static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
-static void MX_USART2_UART_Init(void);
-static void MX_ADC1_Init(void);
-static void MX_DAC_Init(void);
-static void MX_I2S2_Init(void);
+void MX_GPIO_Init(void);
+void MX_DMA_Init(void);
+void MX_USART2_UART_Init(void);
+void MX_ADC1_Init(void);
+void MX_DAC_Init(void);
+void MX_I2S_Init(void);
 
 
 namespace
@@ -347,45 +347,57 @@ main(int argc, char* argv[])
   /* Initialize all configured peripherals */
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  trace_printf("GPIO Init\n");
   MX_DMA_Init();
+  trace_printf("DMA Init\n");
   MX_USART2_UART_Init();
+  trace_printf("UART\n");
   MX_ADC1_Init();
+  trace_printf("ADC\n");
   MX_DAC_Init();
-  MX_I2S2_Init();
+  trace_printf("DAC\n");
+  MX_I2S_Init();
+  trace_printf("I2S\n");
+
+
   // Perform all necessary initialisations for the LED.
   blinkLed.powerUp();
 //
   Timer timer;
 //  timer.start ();
- trace_puts("Start loop");
+ trace_puts("Start");
+ hdma_spi2_rx.XferCpltCallback=dmaM0Complete;
+ hdma_spi2_rx.XferM1CpltCallback=dmaM1Complete;
+ hdma_spi2_rx.XferHalfCpltCallback=dmaHalfComplete;
+ hdma_spi2_rx.XferErrorCallback=dmaError;
 
-    hdma_spi2_rx.XferCpltCallback  = dmaM0Complete;
-    hdma_spi2_rx.XferM1CpltCallback  = dmaM1Complete;
-    hdma_spi2_rx.XferErrorCallback = dmaError;
-    __SPI2_CLK_ENABLE();
-    __DMA1_CLK_ENABLE();
     //* DMA interrupt init */
         /* Sets the priority grouping field */
-      HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_0);
-      HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
-      HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
- if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )SPI2->DR, (uint32_t)&dmabuffer[0][0] ,(uint32_t)&dmabuffer[1][0] ,DMA_TRANSFERCOUNT)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
+
+//      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_HT);
+//      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_TC);
+
+ if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )(&SPI2->DR), (uint32_t)&dmabuffer[0][0] ,(uint32_t)&dmabuffer[1][0] ,DMA_TRANSFERCOUNT)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
     trace_puts("MultiBufferStart");
-    __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_TC);
+
     SPI2->I2SCFGR |= SPI_I2SCFGR_I2SE;
-/* Enable Rx DMA Request */
+//    __HAL_I2S_CLEAR_OVRFLAG(&hi2s2);
+    /* Enable Rx DMA Request */
+    SPI2->CR2 |= SPI_CR2_RXNEIE;
     SPI2->CR2 |= SPI_CR2_RXDMAEN;
+
 //
 while (1) {
+
     if (Buffer0_rdy) {
           blinkLed.turnOn();
-          trace_printf("Buffer0\n");
+//          trace_printf("B0\n");
 //          HandlePdmData(&dmabuffer[0][0]);
           Buffer0_rdy=0;
       }
       if (Buffer1_rdy) {
           blinkLed.turnOff();
-          trace_printf("Buffer1\n");
+//          trace_printf("B1\n");
 //          HandlePdmData(&dmabuffer[1][0]);
           blinkLed.turnOff();
           Buffer1_rdy=0;
@@ -406,13 +418,16 @@ void dmaM0Complete(DMA_HandleTypeDef *hdma)
 //    trace_printf("Xfer Cplt M0\n");
 //    trace_printf("DMA CR =%4x %4x %4x\n\r" ,DMA1_Stream3->CR ,DMA1->HISR,DMA1->LISR);
 }
-void halfComplete(DMA_HandleTypeDef *hdma)
+
+void dmaHalfComplete(DMA_HandleTypeDef *hdma)
 {
 // toggle led1 at interrupt
 //    mypin=0;
-     trace_printf("half Cplt\n");
+//    Buffer0_rdy=1;
+//    trace_printf("Xfer Cplt M0\n");
 //    trace_printf("DMA CR =%4x %4x %4x\n\r" ,DMA1_Stream3->CR ,DMA1->HISR,DMA1->LISR);
 }
+
 void dmaM1Complete(DMA_HandleTypeDef *hdma)
 {
 // toggle led1 at interrupt
@@ -537,20 +552,18 @@ void MX_DAC_Init(void)
 }
 
 /* I2S2 init function */
-void MX_I2S2_Init(void)
+void MX_I2S_Init(void)
 {
-
   hi2s2.Instance = SPI2;
-  hi2s2.Init.Mode = I2S_MODE_MASTER_RX;
-  hi2s2.Init.Standard = I2S_STANDARD_LSB;
-  hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B;
-  hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
-  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_192K;
-  hi2s2.Init.CPOL = I2S_CPOL_HIGH;
-  hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
-  hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
-  HAL_I2S_Init(&hi2s2);
-
+    hi2s2.Init.Mode = I2S_MODE_MASTER_RX;
+    hi2s2.Init.Standard = I2S_STANDARD_LSB;
+    hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B;
+    hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
+    hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_192K;
+    hi2s2.Init.CPOL = I2S_CPOL_LOW;
+    hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
+    hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
+    HAL_I2S_Init(&hi2s2);
 }
 
 /* USART2 init function */
@@ -575,12 +588,13 @@ void MX_USART2_UART_Init(void)
 void MX_DMA_Init(void)
 {
   /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
+   __HAL_RCC_DMA1_CLK_ENABLE();
 
-  /* DMA interrupt init */
-  /* DMA1_Stream3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+   /* DMA interrupt init */
+   /* DMA1_Stream3_IRQn interrupt configuration */
+   HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
+   HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+
 
 }
 /** Configure pins as
