@@ -374,7 +374,7 @@ main(int argc, char* argv[])
     //* DMA interrupt init */
         /* Sets the priority grouping field */
 
-//      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_HT);
+
 //      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_TC);
 
  if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )(&SPI2->DR), (uint32_t)&dmabuffer[0][0] ,(uint32_t)&dmabuffer[1][0] ,DMA_TRANSFERCOUNT)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
@@ -382,6 +382,7 @@ main(int argc, char* argv[])
 
     SPI2->I2SCFGR |= SPI_I2SCFGR_I2SE;
 //    __HAL_I2S_CLEAR_OVRFLAG(&hi2s2);
+      __HAL_DMA_DISABLE_IT(&hdma_spi2_rx,DMA_IT_HT);
     /* Enable Rx DMA Request */
     SPI2->CR2 |= SPI_CR2_RXNEIE;
     SPI2->CR2 |= SPI_CR2_RXDMAEN;
@@ -391,13 +392,13 @@ while (1) {
 
     if (Buffer0_rdy) {
           blinkLed.turnOn();
-//          trace_printf("B0\n");
+//          trace_printf("0\n");
 //          HandlePdmData(&dmabuffer[0][0]);
           Buffer0_rdy=0;
       }
       if (Buffer1_rdy) {
           blinkLed.turnOff();
-//          trace_printf("B1\n");
+//          trace_printf("1\n");
 //          HandlePdmData(&dmabuffer[1][0]);
           blinkLed.turnOff();
           Buffer1_rdy=0;
@@ -424,7 +425,7 @@ void dmaHalfComplete(DMA_HandleTypeDef *hdma)
 // toggle led1 at interrupt
 //    mypin=0;
 //    Buffer0_rdy=1;
-//    trace_printf("Xfer Cplt M0\n");
+    trace_printf("12\n");
 //    trace_printf("DMA CR =%4x %4x %4x\n\r" ,DMA1_Stream3->CR ,DMA1->HISR,DMA1->LISR);
 }
 
