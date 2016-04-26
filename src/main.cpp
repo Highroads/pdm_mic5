@@ -11,6 +11,7 @@
 #include "stm32f4xx_hal.h"
 #include "stm32f4xx_hal_conf.h"
 #include "stm32f4xx_it.h"
+#include "main.h"
 
 #include "Timer.h"
 #include "BlinkLed.h"
@@ -47,6 +48,12 @@ DMA_HandleTypeDef hdma_dac1;
 I2S_HandleTypeDef hi2s2;
 DMA_HandleTypeDef hdma_spi2_rx;
 
+/* Timer handler declaration */
+TIM_HandleTypeDef    TimHandle;
+/* Prescaler declaration */
+uint32_t uwPrescalerValue = 0;
+int32_t output=0;
+uint16_t dacoutput=0;
 UART_HandleTypeDef huart2;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -297,8 +304,8 @@ void HandlePdmData(uint16_t buffer[])
                 stage3 = stage2 - s2_comb3_2;
                 s2_comb3_2 = s2_comb3_1;
                 s2_comb3_1 = stage2;
-// queue the finished PCM sample
-                HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,stage3);
+                output=stage3+0x8FF;
+                dacoutput=(uint16_t)output;
 //           SONARCLR;
             }
             }
@@ -364,7 +371,37 @@ main(int argc, char* argv[])
   blinkLed.powerUp();
 //
   Timer timer;
-//  timer.start ();
+//  timer.start();
+  /* Compute the prescaler value to have TIMx counter clock equal to 10000 Hz */
+  TIMx_CLK_ENABLE();
+
+  /*##-2- Configure the NVIC for TIMx ########################################*/
+  /* Set the TIMx priority */
+  HAL_NVIC_SetPriority(TIMx_IRQn, 0, 1);
+
+  /* Enable the TIMx global Interrupt */
+  HAL_NVIC_EnableIRQ(TIMx_IRQn);
+  uwPrescalerValue = (uint32_t)((SystemCoreClock / 2) / 1800000) - 1;
+
+    /* Set TIMx instance */
+    TimHandle.Instance = TIMx;
+
+    /* Initialize TIMx peripheral as follows:
+         + Period = 10000 - 1
+         + Prescaler = ((SystemCoreClock / 2)/10000) - 1
+         + ClockDivision = 0
+         + Counter direction = Up
+    */
+    TimHandle.Init.Period            = 10;
+    TimHandle.Init.Prescaler         = uwPrescalerValue;
+    TimHandle.Init.ClockDivision     = 0;
+    TimHandle.Init.CounterMode       = TIM_COUNTERMODE_UP;
+//    TimHandle.Init.RepetitionCounter = 0;
+
+    if (HAL_TIM_Base_Init(&TimHandle) != HAL_OK)
+    {
+
+    }
  trace_puts("Start");
  hdma_spi2_rx.XferCpltCallback=dmaM0Complete;
  hdma_spi2_rx.XferM1CpltCallback=dmaM1Complete;
@@ -377,7 +414,9 @@ main(int argc, char* argv[])
 
 //      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_TC);
  HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,0xFFF);
+ HAL_DAC_Start(&hdac,DAC_CHANNEL_1);
  HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,0x000);
+ HAL_DAC_Start(&hdac,DAC_CHANNEL_1);
  if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )(&SPI2->DR), (uint32_t)&dmabuffer[0][0] ,(uint32_t)&dmabuffer[1][0] ,DMA_TRANSFERCOUNT)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
     trace_puts("MultiBufferStart");
 
@@ -385,23 +424,28 @@ main(int argc, char* argv[])
 //    __HAL_I2S_CLEAR_OVRFLAG(&hi2s2);
       __HAL_DMA_DISABLE_IT(&hdma_spi2_rx,DMA_IT_HT);
     /* Enable Rx DMA Request */
-    SPI2->CR2 |= SPI_CR2_RXNEIE;
+//    SPI2->CR2 |= SPI_CR2_RXNEIE;
     SPI2->CR2 |= SPI_CR2_RXDMAEN;
 
 //
-while (1) {
+/* Start Channel1 */
+   if (HAL_TIM_Base_Start_IT(&TimHandle) != HAL_OK)
+      {
+        /* Starting Error */
+//        Error_Handler();
+      }
+
+
+    while (1) {
 
     if (Buffer0_rdy) {
-          blinkLed.turnOn();
 //          trace_printf("0\n");
           HandlePdmData(&dmabuffer[0][0]);
           Buffer0_rdy=0;
       }
       if (Buffer1_rdy) {
-          blinkLed.turnOff();
 //          trace_printf("1\n");
           HandlePdmData(&dmabuffer[1][0]);
-          blinkLed.turnOff();
           Buffer1_rdy=0;
       }
 //     trace_printf("DMA CR =%4x %4x %4x\n\r" ,DMA1_Stream3->CR ,DMA1->HISR,DMA1->LISR);
@@ -410,6 +454,20 @@ while (1) {
     }
 
   return 0;
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+//
+  // queue the finished PCM sample
+//     blinkLed.turnOn();
+     HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,dacoutput);
+//
+//                  trace_printf("out %d dac %d",output,dacoutput);
+//
+     HAL_DAC_Start(&hdac,DAC_CHANNEL_1);
+//     blinkLed.turnOff();
+//
 }
 
 void dmaM0Complete(DMA_HandleTypeDef *hdma)

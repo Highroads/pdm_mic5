@@ -33,6 +33,7 @@
   */
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f4xx_hal.h"
+#include "main.h"
 
 /* USER CODE BEGIN 0 */
 
@@ -65,6 +66,26 @@ void HAL_MspInit(void)
   /* USER CODE BEGIN MspInit 1 */
 
   /* USER CODE END MspInit 1 */
+}
+/**
+  * @brief TIM MSP Initialization
+  *        This function configures the hardware resources used in this example:
+  *           - Peripheral's clock enable
+  * @param htim: TIM handle pointer
+  * @retval None
+  */
+void HAL_TIM_Base_MspInit(TIM_HandleTypeDef *htim)
+{
+  /*##-1- Enable peripheral clock #################################*/
+  /* TIMx Peripheral clock enable */
+  TIMx_CLK_ENABLE();
+
+  /*##-2- Configure the NVIC for TIMx ########################################*/
+  /* Set the TIMx priority */
+  HAL_NVIC_SetPriority(TIMx_IRQn, 0, 1);
+
+  /* Enable the TIMx global Interrupt */
+  HAL_NVIC_EnableIRQ(TIMx_IRQn);
 }
 
 void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
