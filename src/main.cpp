@@ -16,6 +16,7 @@
 #include "Timer.h"
 #include "BlinkLed.h"
 #include "mxconstants.h"
+#include "RingBuffer.h"
 
 // ----------------------------------------------------------------------------
 //
@@ -51,6 +52,7 @@ DMA_HandleTypeDef hdma_spi2_rx;
 /* Timer handler declaration */
 TIM_HandleTypeDef    TimHandle;
 /* Prescaler declaration */
+static RingBuffer fifo(1024);
 uint32_t uwPrescalerValue = 0;
 int32_t output=0;
 uint16_t dacoutput=0;
@@ -227,7 +229,8 @@ const int8_t pdmsum8[256] = {
 uint8_t Buffer0_rdy=0;
 uint8_t Buffer1_rdy=0;
 
-//CircularBuffer16 ringbuffer;
+
+RingBuffer circbuffer(512);
 uint16_t dmabuffer[2][DMA_TRANSFERCOUNT];//DMA Double Buffer
 void init_dmabuffer(void){
     for (int i =0;i < I2S_BUFFERSIZE;i++){
@@ -305,7 +308,7 @@ void HandlePdmData(uint16_t buffer[])
                 s2_comb3_2 = s2_comb3_1;
                 s2_comb3_1 = stage2;
                 output=stage3+0x8FF;
-                dacoutput=(uint16_t)output;
+                circbuffer.put((uint16_t)output);
 //           SONARCLR;
             }
             }
@@ -461,6 +464,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //
   // queue the finished PCM sample
 //     blinkLed.turnOn();
+     circbuffer.get(&dacoutput);
      HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,dacoutput);
 //
 //                  trace_printf("out %d dac %d",output,dacoutput);
