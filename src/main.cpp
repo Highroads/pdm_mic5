@@ -395,7 +395,7 @@ main(int argc, char* argv[])
          + ClockDivision = 0
          + Counter direction = Up
     */
-    TimHandle.Init.Period            = 10;
+    TimHandle.Init.Period            = 40;
     TimHandle.Init.Prescaler         = uwPrescalerValue;
     TimHandle.Init.ClockDivision     = 0;
     TimHandle.Init.CounterMode       = TIM_COUNTERMODE_UP;
@@ -427,7 +427,7 @@ main(int argc, char* argv[])
 //    __HAL_I2S_CLEAR_OVRFLAG(&hi2s2);
       __HAL_DMA_DISABLE_IT(&hdma_spi2_rx,DMA_IT_HT);
     /* Enable Rx DMA Request */
-//    SPI2->CR2 |= SPI_CR2_RXNEIE;
+    SPI2->CR2 |= SPI_CR2_RXNEIE;
     SPI2->CR2 |= SPI_CR2_RXDMAEN;
 
 //
