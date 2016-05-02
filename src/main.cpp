@@ -17,6 +17,7 @@
 #include "BlinkLed.h"
 #include "mxconstants.h"
 #include "RingBuffer.h"
+#include "pdm_filter.h"
 
 // ----------------------------------------------------------------------------
 //
@@ -52,7 +53,6 @@ DMA_HandleTypeDef hdma_spi2_rx;
 /* Timer handler declaration */
 TIM_HandleTypeDef    TimHandle;
 /* Prescaler declaration */
-static RingBuffer fifo(1024);
 uint32_t uwPrescalerValue = 0;
 int32_t output=0;
 uint16_t dacoutput=0;
@@ -71,7 +71,43 @@ void MX_USART2_UART_Init(void);
 void MX_ADC1_Init(void);
 void MX_DAC_Init(void);
 void MX_I2S_Init(void);
+static void PDMDecoder_Init(uint32_t AudioFreq, uint32_t ChnlNbr);
+uint8_t convertPDMToPCM(uint16_t* PDMBuf, uint16_t* PCMBuf);
 
+/* AudioFreq * DataSize (2 bytes) * NumChannels (Stereo: 2) */
+#define DEFAULT_AUDIO_IN_FREQ               I2S_AUDIOFREQ_48K
+#define DEFAULT_AUDIO_IN_BIT_RESOLUTION     ((uint8_t)16)
+#define DEFAULT_AUDIO_IN_CHANNEL_NBR        ((uint8_t)1) /* Mono = 1, Stereo = 2 */
+#define DEFAULT_AUDIO_IN_VOLUME             ((uint16_t)4)
+
+/* PDM buffer input size */
+#define INTERNAL_BUFF_SIZE                  (64*DEFAULT_AUDIO_IN_FREQ/1000/8*DEFAULT_AUDIO_IN_CHANNEL_NBR)
+/* PCM buffer output size */
+#define PCM_OUT_SIZE                        (DEFAULT_AUDIO_IN_FREQ/1000)
+#define CHANNEL_DEMUX_MASK                  ((uint8_t)0x55)
+
+
+PDMFilter_InitStruct Filter[2];
+uint8_t Channel_Demux[128] = {
+    0x00, 0x01, 0x00, 0x01, 0x02, 0x03, 0x02, 0x03,
+    0x00, 0x01, 0x00, 0x01, 0x02, 0x03, 0x02, 0x03,
+    0x04, 0x05, 0x04, 0x05, 0x06, 0x07, 0x06, 0x07,
+    0x04, 0x05, 0x04, 0x05, 0x06, 0x07, 0x06, 0x07,
+    0x00, 0x01, 0x00, 0x01, 0x02, 0x03, 0x02, 0x03,
+    0x00, 0x01, 0x00, 0x01, 0x02, 0x03, 0x02, 0x03,
+    0x04, 0x05, 0x04, 0x05, 0x06, 0x07, 0x06, 0x07,
+    0x04, 0x05, 0x04, 0x05, 0x06, 0x07, 0x06, 0x07,
+    0x08, 0x09, 0x08, 0x09, 0x0a, 0x0b, 0x0a, 0x0b,
+    0x08, 0x09, 0x08, 0x09, 0x0a, 0x0b, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0c, 0x0d, 0x0e, 0x0f, 0x0e, 0x0f,
+    0x0c, 0x0d, 0x0c, 0x0d, 0x0e, 0x0f, 0x0e, 0x0f,
+    0x08, 0x09, 0x08, 0x09, 0x0a, 0x0b, 0x0a, 0x0b,
+    0x08, 0x09, 0x08, 0x09, 0x0a, 0x0b, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0c, 0x0d, 0x0e, 0x0f, 0x0e, 0x0f,
+    0x0c, 0x0d, 0x0c, 0x0d, 0x0e, 0x0f, 0x0e, 0x0f
+};
+
+uint16_t __IO AudioInVolume = DEFAULT_AUDIO_IN_VOLUME;
 
 namespace
 {
@@ -206,6 +242,9 @@ CICREG s2_comb2_2 = 0;
 CICREG s2_sum3 = 0;
 CICREG s2_comb3_1 = 0;
 CICREG s2_comb3_2 = 0;
+CICREG s2_sum4 = 0;
+CICREG s2_comb4_1 = 0;
+CICREG s2_comb4_2 = 0;
 int s2_count = CIC2_R/2;
 
 #define TWOSTEPCIC
@@ -230,16 +269,18 @@ uint8_t Buffer0_rdy=0;
 uint8_t Buffer1_rdy=0;
 
 
-RingBuffer circbuffer(512);
-uint16_t dmabuffer[2][DMA_TRANSFERCOUNT];//DMA Double Buffer
+static RingBuffer circbuffer(2*PCM_OUT_SIZE);
+uint16_t dmabuffer0[INTERNAL_BUFF_SIZE];//DMA Double Buffer
+uint16_t dmabuffer1[INTERNAL_BUFF_SIZE];//DMA Double Buffer
 void init_dmabuffer(void){
-    for (int i =0;i < I2S_BUFFERSIZE;i++){
-        dmabuffer[0][i*2] = 0;// 1st Buffer Lch
-        dmabuffer[0][i*2+1] = 0;// 1nd Buffer Rch
-        dmabuffer[1][i*2] = 0;// 2nd Buffer Lch
-        dmabuffer[1][i*2+1] = 0;// 2nd Buffer Rch
+    for (int i =0;i < INTERNAL_BUFF_SIZE/2;i++){
+        dmabuffer0[i*2] = 0;// 1st Buffer Lch
+        dmabuffer0[i*2+1] = 0;// 1nd Buffer Rch
+        dmabuffer1[i*2] = 0;// 2nd Buffer Lch
+        dmabuffer1[i*2+1] = 0;// 2nd Buffer Rch
     }
 }
+uint16_t pcmout[PCM_OUT_SIZE];
 
 void HandlePdmData(uint16_t buffer[])
 {
@@ -274,9 +315,11 @@ void HandlePdmData(uint16_t buffer[])
             s2_sum1 += pdmsum8[pdm&0xff] ;
             s2_sum2 += s2_sum1;
             s2_sum3 += s2_sum2;
+            s2_sum4 += s2_sum3; // NEW
             s2_sum1 += pdmsum8[pdm>>8] ;
             s2_sum2 += s2_sum1;
             s2_sum3 += s2_sum2;
+            s2_sum4 += s2_sum3; // NEW
 #else
             // PDM bits arrive 16 at a time, MSB first. So we feed them one bit
             // at a time to the CIC filter with N=2, R=128, M=2 which has a bit
@@ -291,8 +334,9 @@ void HandlePdmData(uint16_t buffer[])
 #endif
 
             if (!--s2_count) {
-                CICREG stage3,stage2,stage1;
+
                 CICREG Rout2 = s2_sum3;
+                CICREG stage4,stage3,stage2,stage1;
 //
                 s2_count = CIC2_R/2;
 //
@@ -307,8 +351,14 @@ void HandlePdmData(uint16_t buffer[])
                 stage3 = stage2 - s2_comb3_2;
                 s2_comb3_2 = s2_comb3_1;
                 s2_comb3_1 = stage2;
-                output=stage3+0x8FF;
-                circbuffer.put((uint16_t)output);
+//
+                stage4 = stage3 - s2_comb4_2;
+                s2_comb4_2 = s2_comb4_1;
+                s2_comb4_1 = stage3;
+
+                output=stage4;
+
+                circbuffer.put(output);
 //           SONARCLR;
             }
             }
@@ -368,7 +418,9 @@ main(int argc, char* argv[])
   trace_printf("DAC\n");
   MX_I2S_Init();
   trace_printf("I2S\n");
-
+// pdm filter initialisation
+/* Configure the PDM library */
+    PDMDecoder_Init(I2S_AUDIOFREQ_48K, 1);
 
   // Perform all necessary initialisations for the LED.
   blinkLed.powerUp();
@@ -416,11 +468,7 @@ main(int argc, char* argv[])
 
 
 //      __HAL_DMA_ENABLE_IT(&hdma_spi2_rx,DMA_IT_TC);
- HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,0xFFF);
- HAL_DAC_Start(&hdac,DAC_CHANNEL_1);
- HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,0x000);
- HAL_DAC_Start(&hdac,DAC_CHANNEL_1);
- if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )(&SPI2->DR), (uint32_t)&dmabuffer[0][0] ,(uint32_t)&dmabuffer[1][0] ,DMA_TRANSFERCOUNT)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
+ if(HAL_DMAEx_MultiBufferStart_IT(&hdma_spi2_rx ,(uint32_t )(&SPI2->DR), (uint32_t)&dmabuffer0[0] ,(uint32_t)&dmabuffer1[0] ,INTERNAL_BUFF_SIZE)!=HAL_OK) trace_printf("Error in HAL_DMAEx_MultiBufferStart_IT \n\r");
     trace_puts("MultiBufferStart");
 
     SPI2->I2SCFGR |= SPI_I2SCFGR_I2SE;
@@ -443,13 +491,21 @@ main(int argc, char* argv[])
 
     if (Buffer0_rdy) {
 //          trace_printf("0\n");
-          HandlePdmData(&dmabuffer[0][0]);
-          Buffer0_rdy=0;
+//          HandlePdmData(&dmabuffer[0][0]);
+        convertPDMToPCM(&dmabuffer0[0],&pcmout[0]);
+        for (int i =0;i < PCM_OUT_SIZE;i++){
+               circbuffer.put(pcmout[i]);//
+        }
+        Buffer0_rdy=0;
       }
       if (Buffer1_rdy) {
 //          trace_printf("1\n");
-          HandlePdmData(&dmabuffer[1][0]);
-          Buffer1_rdy=0;
+//          HandlePdmData(&dmabuffer[1][0]);
+        convertPDMToPCM(&dmabuffer1[0],&pcmout[0]);
+        for (int i =0;i < PCM_OUT_SIZE;i++){
+               circbuffer.put(pcmout[i]);//
+        }
+        Buffer1_rdy=0;
       }
 //     trace_printf("DMA CR =%4x %4x %4x\n\r" ,DMA1_Stream3->CR ,DMA1->HISR,DMA1->LISR);
 
@@ -464,8 +520,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //
   // queue the finished PCM sample
 //     blinkLed.turnOn();
-     circbuffer.get(&dacoutput);
-     HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,dacoutput);
+     uint16_t coutput;
+
+     circbuffer.get(&coutput);
+//   trace_printf("%d\n",coutput);
+     coutput=coutput/16;
+     HAL_DAC_SetValue(&hdac,DAC_CHANNEL_1,DAC_ALIGN_12B_R,coutput); // L or R
 //
 //                  trace_printf("out %d dac %d",output,dacoutput);
 //
@@ -620,11 +680,11 @@ void MX_I2S_Init(void)
 {
   hi2s2.Instance = SPI2;
     hi2s2.Init.Mode = I2S_MODE_MASTER_RX;
-    hi2s2.Init.Standard = I2S_STANDARD_LSB;
+    hi2s2.Init.Standard = I2S_STANDARD_LSB; // LSB?
     hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B;
-    hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
-    hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_192K;
-    hi2s2.Init.CPOL = I2S_CPOL_LOW;
+    hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_DISABLE;
+    hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_192K; // 4* AudioFreq
+    hi2s2.Init.CPOL = I2S_CPOL_HIGH;
     hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
     hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
     HAL_I2S_Init(&hi2s2);
@@ -697,6 +757,57 @@ void MX_GPIO_Init(void)
 
 }
 
+/**
+  * @brief  Initializes the PDM library.
+  * @param  AudioFreq: Audio sampling frequency
+  * @param  ChnlNbr: Number of audio channels (1: mono; 2: stereo)
+  */
+static void PDMDecoder_Init(uint32_t AudioFreq, uint32_t ChnlNbr)
+{
+  uint32_t i = 0;
+
+  /* Enable CRC peripheral to unlock the PDM library */
+  __HAL_RCC_CRC_CLK_ENABLE();
+
+  for(i = 0; i < ChnlNbr; i++)
+  {
+    /* Filter LP & HP Init */
+    Filter[i].LP_HZ = 24000.0;
+    Filter[i].HP_HZ = 200.0;
+    Filter[i].Fs = AudioFreq;
+    Filter[i].Out_MicChannels = ChnlNbr;
+    Filter[i].In_MicChannels = ChnlNbr;
+    PDM_Filter_Init((PDMFilter_InitStruct *)&Filter[i]);
+  }
+}
+uint8_t convertPDMToPCM(uint16_t* PDMBuf, uint16_t* PCMBuf)
+{
+  uint8_t app_pdm[INTERNAL_BUFF_SIZE*2];
+  uint8_t byte1 = 0, byte2 = 0;
+  uint32_t i = 0;
+
+  /* PDM Demux */
+  for(i = 0; i<INTERNAL_BUFF_SIZE; i++)
+  {
+    byte2 = (PDMBuf[i] >> 8)& 0xFF;
+    byte1 = (PDMBuf[i] & 0xFF);
+//    do we really need this I thought the dma buffers were already demuxed
+   app_pdm[(i*2)+1] = Channel_Demux[byte1 & CHANNEL_DEMUX_MASK] | Channel_Demux[byte2 & CHANNEL_DEMUX_MASK] << 4;
+   app_pdm[(i*2)] = Channel_Demux[(byte1 >> 1) & CHANNEL_DEMUX_MASK] | Channel_Demux[(byte2 >> 1) & CHANNEL_DEMUX_MASK] << 4;
+//
+//    app_pdm[(i*2)+1]=byte1;
+//    app_pdm[(i*2)]=byte2;
+  }
+
+  for(i = 0; i < DEFAULT_AUDIO_IN_CHANNEL_NBR; i++)
+  {
+    /* PDM to PCM filter */
+    PDM_Filter_64_LSB((uint8_t*)&app_pdm[i], (uint16_t*)&(PCMBuf[i]), AudioInVolume , (PDMFilter_InitStruct *)&Filter[i]);
+  }
+
+  /* Return AUDIO_OK when all operations are correctly done */
+  return 0;
+}
 
 #ifdef USE_FULL_ASSERT
 
